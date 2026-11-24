@@ -1,0 +1,70 @@
+name: Tailscale Exit Node + Windows RDP (auto-approve)
+
+on:
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: "How many hours to keep the session alive (max 5.8)"
+        required: false
+        default: "5"
+
+jobs:
+  rdp:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Enable Remote Desktop
+        shell: pwsh
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 1
+          Set-Service -Name TermService -StartupType Automatic
+          Start-Service -Name TermService
+
+      - name: Create RDP user
+        shell: pwsh
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          if (-not $env:RDP_PASSWORD) { throw "Add an RDP_PASSWORD repo secret first." }
+          net user rdpuser "$env:RDP_PASSWORD" /add
+          net localgroup Administrators rdpuser /add
+          net localgroup "Remote Desktop Users" rdpuser /add
+
+      - name: Connect to Tailscale (OAuth, exit node)
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          hostname: gh-win-exitnode
+          args: --advertise-exit-node --accept-dns=false
+
+      - name: Show connection info
+        shell: pwsh
+        run: |
+          $ip = (tailscale ip -4).Trim()
+          Write-Host "========================================"
+          Write-Host "RDP host : $ip   (or gh-win-exitnode)"
+          Write-Host "Username : rdpuser"
+          Write-Host "Password : your RDP_PASSWORD secret"
+          Write-Host "========================================"
+          tailscale status
+
+      - name: Keep session alive
+        shell: pwsh
+        run: |
+          $hours = [double]"${{ github.event.inputs.hours }}"
+          if ($hours -gt 5.8) { $hours = 5.8 }
+          $end = (Get-Date).AddHours($hours)
+          while ((Get-Date) -lt $end) {
+            if (Test-Path "C:\stop.txt") { Write-Host "Stop file found, ending."; break }
+            Start-Sleep -Seconds 30
+          }
+
+      - name: Disconnect Tailscale
+        if: always()
+        shell: pwsh
+        run: tailscale logout
