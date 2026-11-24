@@ -29,9 +29,11 @@ jobs:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
           if (-not $env:RDP_PASSWORD) { throw "Add an RDP_PASSWORD repo secret first." }
-          net user rdpuser "$env:RDP_PASSWORD" /add
-          net localgroup Administrators rdpuser /add
-          net localgroup "Remote Desktop Users" rdpuser /add
+          $secure = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
+          New-LocalUser -Name "rdpuser" -Password $secure -PasswordNeverExpires -AccountNeverExpires | Out-Null
+          Add-LocalGroupMember -Group "Administrators" -Member "rdpuser"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "rdpuser"
+          Write-Host "rdpuser created."
 
       - name: Connect to Tailscale (OAuth, exit node)
         uses: tailscale/github-action@v3
@@ -67,4 +69,7 @@ jobs:
       - name: Disconnect Tailscale
         if: always()
         shell: pwsh
-        run: tailscale logout
+        continue-on-error: true
+        run: |
+          if (Get-Command tailscale -ErrorAction SilentlyContinue) { tailscale logout }
+          else { Write-Host "Tailscale not installed, nothing to disconnect." }
